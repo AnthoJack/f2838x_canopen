@@ -45,6 +45,9 @@ extern "C" {
 /* Stack configuration override default values.
  * For more information see file CO_config.h. */
 
+#define CO_CONFIG_LSS 0
+#define CO_CONFIG_LEDS 0
+
 
 /* Basic definitions. If big endian, CO_SWAP_xx macros must swap bytes. */
 #define CO_LITTLE_ENDIAN

@@ -121,8 +121,7 @@ void main(void)
     {
         CO->CANmodule->CANnormal = false;
 
-        CO_CANsetConfigurationMode((void*) &CANptr);
-        CO_CANmodule_disable(CO->CANmodule);
+        CO_CANsetConfigurationMode((void*) CANptr);
 
         err = CO_CANinit(CO, CANptr, BITRATE);
         if(err != CO_ERROR_NO)
@@ -165,6 +164,8 @@ void main(void)
         }
 
         SYSTICK_disableCounter();
+
+        CO_CANmodule_disable(CO->CANmodule);
     }
 
     SYSTICK_disableInterrupt();

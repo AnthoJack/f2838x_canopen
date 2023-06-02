@@ -34,6 +34,8 @@ CO_CANmodule_t *canModForIsr;
 
 void CO_CANinterrupt(CO_CANmodule_t *CANmodule);
 
+// Driver ISR prototype requires access to the CO_CANmodule_t object so 
+// this intermediate ISR is defined to pass the object to the driver ISR
 void /*__interrupt*/ canIsr(void)
 {
     CO_CANinterrupt(canModForIsr);
@@ -267,6 +269,11 @@ void CO_CANclearPendingSyncPDOs(CO_CANmodule_t *CANmodule){
         if(buffer->bufferFull && buffer->syncFlag){
             buffer->bufferFull = false;
             tpdoDeleted++;
+            //WARNING: It is unclear if the next function has the desired effect
+            // The stack seems to require the message transmission to be cancelled
+            // but the message object still needs to function for next message and
+            // the driverlib documentation is a bit shady about this function's
+            // behaviour. More testing is required if this function is required
             CAN_clearMessage(CANmodule->CANptr, buffer->msgObj);
         }
         buffer++;
@@ -352,6 +359,9 @@ void CO_CANinterrupt(CO_CANmodule_t *CANmodule){
 
         index = cause;
         buffer = &CANmodule->rxArray[index];
+        // Functions exist to recover the data from a message object but they 
+        // don't allow the DLC to be recovered too so a more "manual" data 
+        // recovery is used
         CAN_transferMessage(CANmodule->CANptr, 1, cause, false, false);
         rcvMsg.ident = HWREG(CANmodule->CANptr + CAN_O_IF1ARB);
         rcvMsg.DLC = HWREG(CANmodule->CANptr + CAN_O_IF1MCTL);
