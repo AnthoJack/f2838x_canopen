@@ -7,17 +7,17 @@ The objective of this repository is to provide a CANopen stack to run on the TMS
 - **f2838x_canopen.c**: Main source file for the project. Contains the `main` function as well as the timer ISR function for CANopenNode realtime periodic interrupt-thread
 - **CANopenNode/**: CANopenNode git submodule. Ideally, files in this folder should not be modified
 - **canOpenC2000/**: Folder for files required by CANopenNode but that can be modified
-    - **CO_driver_target.h**: Driver structures definition and configuration defaults override. Created based on the one from *CANopenNode/examples/* as some structure members are actually required from outside the driver implementation
+    - **CO_driver_target.h**: Driver structures definition and configuration defaults override. Created based on the one from *CANopenNode/examples/* as some structure members are actually required from outside the driver implementation, despite CANopenNode claiming to be "object-oriented" (which would imply better encapsulation)
     - **CO_driver.c**: Implementation of the driver functions
-    - **CO_storage.c/h**: Not sure what this does but CANopenNode requires some implementations inside to compile properly. Copied from *CANopenNode/examples*
+    - **CO_storage.c/h**: Functions necessary for CANopenNode to store the Object Dictionnary to flash memory. Not implemented. Copied from *CANopenNode/examples*
     - **OD.c/h**: Object Dictionnary definitions and implementation
 - **2838x_X_lnk_cm.cmd**: Linker scripts to define the memory attribution for the different code sections
 - **device/**: Driverlib files to initialise the CM core
-- **device/driverlib_cm**: Driverlib files with functions to manage the different devices of the uC
+- **device/driverlib_cm**: Driverlib files with functions to manage the different devices of the uC through the CM core
 
 ## Microcontroller
 
-The F2838x uC is part of the C2000 microcontroller family 
+The F2838x uC is part of the C2000 microcontroller family. It posesses 2 C28x (proprietary cores from TI) and a Cortex-M0 core
 
 ### CM (Cortex-M0) Core
 
@@ -25,9 +25,9 @@ The Communication Manager core is an ARM Cortex-M0 core and has access to the CA
 
 ### CAN module
 
-The CAN module of the f2838x uC is based on the DCAN IP. This IP is based on a RAM memory that stores up to 32 objects containing informations on CAN frames that should be received or transmitted like the identifier, DLC, data and mask (to filter the received frames). Message objects can be configured so an interrupt is sent once a CAN frame is received or transmitted.
+The CAN module of the f2838x uC is based on the DCAN IP. This IP is based on a RAM memory that stores up to 32 *Message Objects* containing informations on CAN frames that should be received or transmitted like the identifier, DLC, data and mask (to filter the received frames). Message objects can be configured so an interrupt is sent once a CAN frame is received or transmitted.
 
-Message objects aren't accesible directly and have to be accessed via one of the memory mapped interface registers provided by the device. Configuration and transmission and data reception can be done using the driverlib functions but updating DLCs and identifiers has no attributed driverlib function and has to be done by accessing the registers directly
+Message objects aren't accesible directly and have to be accessed via one of the memory mapped interface registers provided by the device. Configuration, transmission and data reception can be done using the driverlib functions but updating DLCs and identifiers has no attributed driverlib function and has to be done by using the interface registers manually
 
 The CAN module may also be configured to send interrupts when an error is detected or when its status changes
 
@@ -39,11 +39,48 @@ CANopenNode is a CANopen open-source stack. It handles the features of the CiA30
 
 CANopenNode is written to be generic and provides a *CO_driver.h* file with function prototypes that need to be implemented for it to communicate with the CAN module. Functions can be implemented in a *CO_driver.c* file and a *CO_driver_target.h* file can be used to declare structures internal to the driver. Both files are examplified in the *examples/* folder and it is a good idea to use those as reference as the APi is sadly not as encapsulated as one might expect: some fields of the declared structures are indeed only used in the driver but others are used in the main code and are thus mandatory. 
 
-The internal code of CANopenNode relies on objects for each CANopen feature (NMT, EMERGENCY, SDO, PDO...). As long as the amount of objects isn't superior to 32, the CAN module's message objects can be used to handle the objects and the data they send/receive. Assigning all the reception (rx) objects (`CANrxBuffer_t`) before the transmission (tx) objects  (`CANtxBuffer_t`) in the message objects allows for fast matching tx/rx object \<-> message object
+The internal code of CANopenNode relies on *OD objects* for each CANopen feature (NMT, EMERGENCY, SDO, PDO...). Those objects then declare transmission (*tx*) and reception (*rx*) objects depending on their needs to send and receive CAN frames. the amount of transmission and reception object is given to the driver as well as 2 arrays to store them at init time: one for *rx* objects and one for *tx* objects. As long as the amount of objects isn't superior to 32, the CAN module's message objects can be used to handle the objects and the data they send/receive. Both types of objects are initialised by calling the corresponding CAN driver functions `CO_CANrxBufferInit` or `CO_CANtxBufferInit`. The decision was made to assign all the reception (rx) objects (`CANrxBuffer_t`) before the transmission (tx) objects  (`CANtxBuffer_t`) in the message objects of the CAN module as it allows for fast matching of *tx/rx object* \<-> *message object*. Of course this assumes the number of OD objects won't change after initialisation
 
-### User
+When an interrupt is generated because a message object has received a frame or because it has sent its frame, the index of the message object that generated the IRQ can be retrieved. With the previously explained attribution of the OD objects to the message objects, it is then simple to deduce if the corresponding OD object is *tx* (number > #*rx object*) or *rx* (and thus which object array it is found in) and the index of the OD object in its list (*rx object* -> array index = message object index, *tx object* -> array index = message object index - #*rx objects*)
 
-The stack relies on threaded functions to manage timed (like OD management) or asynchronous (like CAN reception) tasks. In this context, those are handled using interrupts
+The `CANtxBuffer_t` structure must contain a `data` field. This field is used by the CANopenNode code to transfer data to a *tx* object prior to calling the `CO_CANsend` function which signals the driver that the data must be sent. Once `CO_CANsend` is called, the corresponding message object is accessed to check if it is currently already trying to transmit another frame. If such is the case, the function returns an error. If not, the data and other frame informations are sent to the corresponding message object, transmission is requested and the `bufferFull` field of the object's structure is set to `true` to signal that the message object is occupied. Once the transmission interrupt for this object is generated, the flag is set to `false` again
+
+`CANrxBuffer_t` objects contain a callback function that is given at initialisation along with a pointer to the OD object. When a CAN frame is received and is attributed to the object, the callback function must be called and given the object pointer as well as a pointer to the message. This message pointer can be of any type but the callback function must be able to retrieve the identifier, DLC and data of the message. To this end, it uses the `CO_CANrxMsg_readIdent(msg)`, `CO_CANrxMsg_readDLC(msg)` and `CO_CANrxMsg_readData(msg)` macros which must be defined in the *CO_driver_target.h* file
+
+For a bit to be recovered from the CAN interface, its state is assessed for a certain number of ticks from the CAN module clock, referred to as *time quantas*. During this time, some operations ensuring the reliability of the communication are performed on the CAN line. The amount of time quantas necessary for one bit is called "bit time" and is configurable when configuring the bitrate of the CAN module. The `CAN_setBitRate` function is provided by the driverlib and requires the last argument to be a bit time between 8 and 25. This value must be chosen so that "*The resulting Bit time (1/Bit rate) \[is an] integer multiple of the CAN clock period*" ([F2838x Technical Reference manual](https://www.ti.com/lit/pdf/spruii0), Section 30.12.2.1, Page 3355). The term "resulting bit time" here seems to be refering to the period of one *time quanta* for the CAN module (To be verified). If such is the case, then the frequency of the CAN module must be an integer multiple of the product of the bitrate and the bit time:
+
+$$
+q_p = a * clk_p \leftrightarrow
+\frac{1}{q_f} = \frac{a}{clk_f} \leftrightarrow
+qf = \frac{clk_f}{a} \leftrightarrow
+a * q_f = clk_f, a \in \natnums* \\
+$$
+$$
+q_{p/f}:\ period/frequency\ of\ time\ quanta \\
+clk_{p/f}:\ period/frequency\ of\ CAN\ module\ clock \\
+$$
+
+This property can be checked with:
+
+$$
+clk_f\ mod\ q_f = 0 \\
+$$
+$$
+q_f = bitrate * bit\_time
+$$
+
+Note:
+
+* No specific configuration of the clock tree was made so the CAN module clock frequency should be equal to the CM clock frequency (125MHz)
+* CANopenNode only supports the following bitrates (in bps): 10K, 20K, 50K, 125K, 250K, 500K, 800K, 1M
+
+The *CanBitTimeVerif.xlsx* spreadsheet was created to rapidly check which bit times supported by the driverlib are useable for the bitrates supported by CANopenNode. As shown inside it, the available options are not legion and it could be interesting to use the clocktree to provide the CAN module with a frequency that results in more adequate options. The calculations are based on the CAN clock frequency which can be modified in the spreadsheet
+
+Filtering the received data frames is done by the CAN module according to the following rule: `(receivedIdent xor msgObjIdent) and msgObjMask = 0`. This means that certain bits of the received frame's identifier can differ from the message object's identifier if the mask marks them as "don't care" (0)
+
+### Stack usage
+
+The stack relies on threaded functions to manage timed (like OD management) or asynchronous (like CAN reception) tasks. In this context, those are handled using interrupts. One such interrupt is the CAN interrupt mentionned in the driver section. It is called when the CAN module raises an IRQ and performs adequate processing depending on the cause. The second interrupt is raised by a timer every millisecond and handles the processing of the R/TPDOs
 
 ### OD
 
@@ -51,16 +88,16 @@ CANopenEditor is an Object Dictionnary editor capable of generating source code 
 
 ### Configuration
 
-Core features of the CANopen protocol (defined in the CiA 301 file and implemented in the *CANopenNode/301* folder) are configured in the *canOpenC2000/OD.h* file. A basic example file has been recovered from *CANopenNode/examples*
+Core features of the CANopen protocol (defined in the CiA 301 document and implemented in the *CANopenNode/301* folder) are configured in the *canOpenC2000/OD.h* file. A basic *OD.c/h* file has been recovered from *CANopenNode/examples*. Other CANopen feature extensions (defined in the CiA 30X documents) have been implemented in the corresponding *CANopenNode/30X* folders and can be used by the stack if the configuration says so
 
 Currently disabled extensions of CANopen (Default configuration overrides are made in the *CO_driver_target.h* file):
 
-* LSS
+* LSS (CiA 305)
     * Allows the CANopen nodes in a network to be configured by other nodes. For testing and in simple networks, it might be simpler to leave this one out
     * Disabled by setting `#define CO_CONFIG_LSS 0`
-* LED
+* LED (CiA 303)
     * Allows for a LED to be controlled through CANopen
-    Disabled by setting `#define CO_CONFIG_LEDS 0`
+    * Disabled by setting `#define CO_CONFIG_LEDS 0`
 
 ## CCS
 
@@ -80,7 +117,7 @@ Repository contains all the files necessary to open it as a project in CCS. Howe
 
 #### Program sections attribution
 
-The *2838x_RAM_lnk_cm.cmd* file declares RAM blocks and flash banks available and assigns the program sections to them if some section takes too much space, it will be split and put on separate blocks. Assigning multiple possible blocks for a section is done by listing them separated by "|". In the *View* > *Memory Allocation* view, the different banks and blocks are listed and the associated drop-down menu shows the sections that were allocated on it during the last build. Hovering over the blocks shows the amount of used and available memory and the sections show the amount of "units" (bytes apparently) they occupy
+The *2838x_RAM_lnk_cm.cmd* file declares RAM blocks and flash banks available and assigns the program sections to them. If some section takes too much space, it will be split and put on separate blocks. Assigning multiple possible blocks for a section is done by listing them separated by "|". In the *View* > *Memory Allocation* view, the different banks and blocks are listed and the associated drop-down menu shows the sections that were allocated on it during the last build. Hovering over the blocks shows the amount of used and available memory and the sections show the amount of "units" (bytes apparently) they occupy
 
 ![CM core memory blocks diagram](docImages/CM_memory.png)
 CM core memory blocks diagram
@@ -103,8 +140,10 @@ When compiling CANopenNode, make sure the "examples" folder is excluded from the
 
 ## Current problems and limitations
 
-The stack requires critical section protection to guarantee some data transfers are made safely between the User, stack and CAN module but I wasn't able to find how to implement them on the uC. It could also be that because the stack uses interrupts instead of actual threads, critical section isn't feasible since blocking an ISR is out of the question
+The stack requires critical section protection to guarantee some data transfers are made safely between the User, stack and CAN module but I wasn't able to find how to implement them on the uC. It could also be that because the stack uses interrupts instead of actual threads, critical section isn't desireable since blocking an ISR is out of the question
 
 Current driver only allows tx objects to send one frame to their dedicated message object. If new data is sent to the message object before the previous is sent, an error occurs and the new data is not memorised by the driver
 
 Support for syncPDOs in the driver is not guaranteed to function as is (see comments above related driver function)
+
+Current program stops working when initialising the CAN module RAM. Once the request is made to initialise it, the program enters a loop supposed to wait for the RAM initialisation to be finished by reading a register value but the loop is never left

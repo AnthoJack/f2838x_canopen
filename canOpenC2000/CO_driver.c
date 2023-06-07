@@ -85,7 +85,10 @@ CO_ReturnError_t CO_CANmodule_init(
     CANmodule->txSize = txSize;
     CANmodule->CANerrorStatus = 0;
     CANmodule->CANnormal = false;
-    CANmodule->useCANrxFilters = (rxSize + txSize <= 32U) ? true : false;/* microcontroller dependent */
+
+    // Check that there are enough message objects for all the OD objects
+    CANmodule->useCANrxFilters = (rxSize + txSize <= 32U); 
+
     CANmodule->bufferInhibitFlag = false;
     CANmodule->firstCANtxMessage = true;
     CANmodule->CANtxCount = 0U;
@@ -118,9 +121,8 @@ CO_ReturnError_t CO_CANmodule_init(
         CAN_disableAllMessageObjects(CANmodule->CANptr);
     }
     else{
-        /* CAN module filters are not used, all messages with standard 11-bit */
-        /* identifier will be received */
-        /* Configure mask 0 so, that all messages with standard identifier are accepted */
+        // Not enough message objects
+        return CO_ERROR_ILLEGAL_ARGUMENT;
     }
 
 
@@ -359,15 +361,16 @@ void CO_CANinterrupt(CO_CANmodule_t *CANmodule){
 
         index = cause;
         buffer = &CANmodule->rxArray[index];
-        // Functions exist to recover the data from a message object but they 
-        // don't allow the DLC to be recovered too so a more "manual" data 
-        // recovery is used
+        // Functions exist to recover the data from a message object but they don't allow the DLC to be recovered too so a more "manual" data recovery is used
         CAN_transferMessage(CANmodule->CANptr, 1, cause, false, false);
         rcvMsg.ident = HWREG(CANmodule->CANptr + CAN_O_IF1ARB);
         rcvMsg.DLC = HWREG(CANmodule->CANptr + CAN_O_IF1MCTL);
         rcvMsg.ident >>= 18;
         rcvMsg.ident &= 0x7ff;
         rcvMsg.DLC &= 0xf;
+        //WARNING: Endianness may cause problems here
+        *(uint32_t*)(rcvMsg.data) = HWREG(CANmodule->CANptr + CAN_O_IF1DATA);
+        *(uint32_t*)(rcvMsg.data + 4) = HWREG(CANmodule->CANptr + CAN_O_IF2DATA);
 
 
         /* Call specific function, which will process the message */
@@ -382,7 +385,7 @@ void CO_CANinterrupt(CO_CANmodule_t *CANmodule){
     /* transmit interrupt */
     else if(cause < 32){
         /* Clear interrupt flag */
-
+        CAN_clearInterruptStatus(CANmodule->CANptr, cause);
         /* First CAN message (bootup) was sent successfully */
         CANmodule->firstCANtxMessage = false;
         /* clear flag from previous message */

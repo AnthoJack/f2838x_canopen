@@ -45,8 +45,8 @@ extern "C" {
 /* Stack configuration override default values.
  * For more information see file CO_config.h. */
 
-#define CO_CONFIG_LSS 0
-#define CO_CONFIG_LEDS 0
+#define CO_CONFIG_LSS 0 // Disable LSS (configuration from network)
+#define CO_CONFIG_LEDS 0 //Disable LED management
 
 
 /* Basic definitions. If big endian, CO_SWAP_xx macros must swap bytes. */
@@ -61,13 +61,18 @@ typedef uint_fast8_t            bool_t;
 typedef float                   float32_t;
 typedef double                  float64_t;
 
+/*
+Used to transfer the received message frame informations to the OD objects' callback function
+*/
 typedef struct {
     uint32_t ident;
     uint8_t DLC;
     uint8_t data[8];
 } CO_CANrxMsg_t;
 
-/* Access to received CAN message */
+/* 
+Access to received CAN message. Used by the OD objects' callback function
+*/
 #define CO_CANrxMsg_readIdent(msg) (((CO_CANrxMsg_t*)(msg))->ident)
 #define CO_CANrxMsg_readDLC(msg)   (((CO_CANrxMsg_t*)(msg))->DLC)
 #define CO_CANrxMsg_readData(msg)  (((CO_CANrxMsg_t*)(msg))->data)
@@ -117,6 +122,7 @@ typedef struct {
     void *addrNV;
 } CO_storage_entry_t;
 
+// Critical section and barriers: NOT IMPLEMENTED
 
 /* (un)lock critical section in CO_CANsend() */
 #define CO_LOCK_CAN_SEND(CAN_MODULE)
